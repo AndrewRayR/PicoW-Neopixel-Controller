@@ -1,0 +1,122 @@
+import time
+import board
+import neopixel
+import busio
+from adafruit_seesaw.seesaw import Seesaw
+
+# I2C setup for STEMMA Soil Sensor on custom pins
+try:
+    i2c = busio.I2C(scl=board.GP27, sda=board.GP26)
+    seesaw = Seesaw(i2c, addr=0x36)  # Default I2C address
+    moisture_sensor_connected = True
+except Exception as e:
+    print("Moisture sensor error:", e)
+    moisture_sensor_connected = False
+
+# NeoPixel setup
+pixel_pin = board.GP22  # Adjust if needed
+num_pixels = 16
+# <<< You can change the brightness here! >>>
+neopixel_strip = neopixel.NeoPixel(pixel_pin, num_pixels, brightness=1, auto_write=False)
+
+# Snaking 2-column layout: right down, then left up
+led_order = [7, 6, 5, 4, 3, 2, 1, 0, 8, 9, 10, 11, 12, 13, 14, 15]
+
+# Define dry/wet calibration values for the sensor
+MOISTURE_DRY = 350   # Value when the sensor is dry
+MOISTURE_WET = 1150  # Value when the sensor is in water
+
+def read_moisture_level():
+    """Read and scale moisture sensor value to 0.0–1.0."""
+    raw = seesaw.moisture_read()
+    scaled = (raw - MOISTURE_DRY) / (MOISTURE_WET - MOISTURE_DRY)
+    return min(max(scaled, 0.0), 1.0)
+
+def blend(color1, color2, t):
+    """Blend between two RGB colors by factor t (0.0 - 1.0)."""
+    return (
+        int(color1[0] + (color2[0] - color1[0]) * t),
+        int(color1[1] + (color2[1] - color1[1]) * t),
+        int(color2[2] + (color2[2] - color1[2]) * t)
+    )
+
+def get_color(pct):
+    """Return smoothly blended color based on moisture percent (0.0–1.0)."""
+    if pct <= 0.25:
+        return blend((50, 0, 0), (50, 30, 0), pct / 0.25)  # Red to Orange-Yellow
+    elif pct <= 0.5:
+        return blend((50, 30, 0), (0, 50, 0), (pct - 0.25) / 0.25)  # Orange-Yellow to Green
+    elif pct <= 0.75:
+        return blend((0, 50, 0), (0, 40, 40), (pct - 0.5) / 0.25)  # Green to Cyan-ish
+    else:
+        return blend((0, 40, 40), (0, 0, 50), (pct - 0.75) / 0.25)  # Cyan-ish to Blue
+
+def update_leds(level):
+    """Light LEDs with smooth color transitions based on level (0.0 to 1.0)."""
+    lit_pixels = round(level * num_pixels)
+    for i in range(num_pixels):
+        if i < lit_pixels:
+            pct = (i + 1) / num_pixels
+            neopixel_strip[led_order[i]] = get_color(pct)
+        else:
+            neopixel_strip[led_order[i]] = (0, 0, 0)
+    neopixel_strip.show()
+
+def swirl_animation(duration=10):
+    """Smooth blue swirl animation with trail and fade."""
+    swirl_order = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    start = time.monotonic()
+    head_index = 0
+
+    trail_length = 5  # How many LEDs behind are lit with decreasing brightness
+
+    while time.monotonic() - start < duration:
+        # Clear all LEDs first
+        for i in range(num_pixels):
+            neopixel_strip[i] = (0, 0, 0)
+
+        # Draw the trail
+        for offset in range(trail_length):
+            idx = (head_index - offset) % len(swirl_order)
+            brightness = max(0, 75 - offset * 10)  # Dimmer for each step
+            neopixel_strip[swirl_order[idx]] = (0, 0, brightness)
+
+        neopixel_strip.show()
+        head_index = (head_index + 1) % len(swirl_order)
+        time.sleep(0.07)
+
+def flash_green():
+    """Flash dim green 3 times with 1 second interval."""
+    dim_green = (0, 50, 0)  # Dimmed green color (lower brightness)
+    
+    for _ in range(3):
+        for i in range(num_pixels):
+            neopixel_strip[led_order[i]] = dim_green
+        neopixel_strip.show()
+        time.sleep(1)
+        for i in range(num_pixels):
+            neopixel_strip[led_order[i]] = (0, 0, 0)  # Turn off LEDs
+        neopixel_strip.show()
+        time.sleep(1)
+
+def solid_red():
+    """Make all LEDs red for 10 seconds."""
+    for i in range(num_pixels):
+        neopixel_strip[led_order[i]] = (255, 0, 0)
+    neopixel_strip.show()
+    time.sleep(10)
+
+# Initial setup
+if moisture_sensor_connected:
+    print("Moisture sensor and LEDs detected!")
+    swirl_animation()  # Blue swirl animation for the first 10 seconds
+    flash_green()  # Flash green 3 times if both are detected
+else:
+    print("Moisture sensor or LEDs not detected. Going solid red.")
+    solid_red()  # If not detected, go solid red
+
+# Main loop to monitor moisture levels and update LED status
+while True:
+    moisture_level = read_moisture_level()  # Read the moisture sensor level
+    update_leds(moisture_level)  # Update the LEDs based on moisture level
+    time.sleep(0.2)  # Short delay before next reading
